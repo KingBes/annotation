@@ -1,6 +1,7 @@
-assets/*
-!assets/.gitignore
-protected/runtime/*
-!protected/runtime/.gitignore
-protected/data/*.db
-themes/classic/views/
+build
+vendor
+.idea
+.vscode
+.phpunit*
+composer.lock
+_*

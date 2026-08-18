@@ -1,0 +1,14 @@
+{
+    "name": "kingbes/annotation",
+    "type": "library",
+    "license": "MIT",
+    "description": "Thinkphp plugin kingbes/annotation",
+    "require": {
+        "php": ">=8.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kingbes\\Annotation\\": "src"
+        }
+    }
+}
