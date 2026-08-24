@@ -35,19 +35,9 @@ class Data
     protected string $appPath;
 
     /**
-     * 应用名段（多应用下为应用名，单应用为空）.仅用于路由标识 name，规则路径不含它.
-     */
-    protected string $appSegment;
-
-    /**
      * 项目根目录.
      */
     protected string $rootPath;
-
-    /**
-     * 基础命名空间（单应用默认 app，多应用下为 app/{应用名}）.
-     */
-    protected string $namespace;
 
     /**
      * 生成的控制器路由数据.
@@ -69,48 +59,68 @@ class Data
         $this->basePath = $app->getBasePath();
         $this->appPath = $app->getAppPath();
         $this->rootPath = $app->getRootPath();
-        $this->namespace = $app->getNamespace();
-        // 多应用：当前应用目录不同于应用根时，取应用名作为 name 前缀
-        $this->appSegment = ($this->appPath !== $this->basePath)
-            ? basename(rtrim($this->appPath, '/\\'))
-            : '';
 
         $this->scan($config);
     }
 
     /**
      * 扫描目录并生成路由数据.
+     *
+     * 一次遍历 app 根目录下的全部应用（多应用下为各子应用，单应用下为应用本身），
+     * 使跨应用的控制器路由（含路由名）都能注册，便于 url('跨应用路由名') 解析。
      */
     protected function scan(array $config): void
     {
-        $files = [];
+        foreach ($this->collectApps() as [$appPath, $appSegment]) {
+            $files = [];
 
-        // 递归扫描当前应用目录下所有 php 文件，仅收录包含 controller_layer 路径段的文件
-        $base = $this->appPath;
-        foreach ($this->phpFiles($base) as $file) {
-            $relative = $this->relativePath($file, $base);
-            $check = strtolower(str_replace('\\', '/', $relative));
-            if (strpos($check, strtolower($this->controllerLayer)) !== false) {
-                $files[] = $file;
-            }
-        }
-
-        // 额外控制器目录
-        foreach ((array) ($config['controllers'] ?? []) as $dir) {
-            if (!$this->isAbsolute($dir)) {
-                $dir = $this->rootPath . ltrim($dir, '/\\');
-            }
-            $dir = rtrim($dir, '/\\');
-            if (is_dir($dir)) {
-                foreach ($this->phpFiles($dir) as $file) {
+            // 递归扫描应用目录下所有 php 文件，仅收录包含 controller_layer 路径段的文件
+            foreach ($this->phpFiles($appPath) as $file) {
+                $relative = $this->relativePath($file, $appPath);
+                $check = strtolower(str_replace('\\', '/', $relative));
+                if (strpos($check, strtolower($this->controllerLayer)) !== false) {
                     $files[] = $file;
                 }
             }
-        }
 
-        foreach ($files as $file) {
-            $this->parseFile($file);
+            // 额外控制器目录：归属当前应用命名空间语义，仅并入当前应用
+            if ($appPath === $this->appPath) {
+                foreach ((array) ($config['controllers'] ?? []) as $dir) {
+                    if (!$this->isAbsolute($dir)) {
+                        $dir = $this->rootPath . ltrim($dir, '/\\');
+                    }
+                    $dir = rtrim($dir, '/\\');
+                    if (is_dir($dir)) {
+                        foreach ($this->phpFiles($dir) as $file) {
+                            $files[] = $file;
+                        }
+                    }
+                }
+            }
+
+            foreach ($files as $file) {
+                $this->parseFile($file, $appPath, $appSegment);
+            }
         }
+    }
+
+    /**
+     * 收集全部待扫描的应用目录与对应应用名段.
+     *
+     * 多应用下返回应用根下每个子目录；单应用下返回应用本身（应用名段为空）.
+     *
+     * @return array<int, array{0:string,1:string}> [应用目录, 应用名段]
+     */
+    protected function collectApps(): array
+    {
+        if ($this->appPath !== $this->basePath) {
+            $apps = [];
+            foreach (glob($this->basePath . '*', GLOB_ONLYDIR) as $dir) {
+                $apps[] = [$dir, basename($dir)];
+            }
+            return $apps;
+        }
+        return [[$this->appPath, '']];
     }
 
     /**
@@ -142,6 +152,63 @@ class Data
     }
 
     /**
+     * 从文件内容解析真实类名（namespace + className）.
+     *
+     * 不依赖文件名推导，避免文件名与类名不一致（如 Install.php 内定义 Index 类）时漏扫。
+     *
+     * @return string|null 完整类名，无法解析时返回 null
+     */
+    protected function resolveClassFromFile(string $file): ?string
+    {
+        $content = @file_get_contents($file);
+        if ($content === false) {
+            return null;
+        }
+        $namespace = '';
+        $className = null;
+        $tokens = token_get_all($content);
+        $count = count($tokens);
+        for ($i = 0; $i < $count; $i++) {
+            $token = $tokens[$i];
+            if (!is_array($token)) {
+                continue;
+            }
+            if ($token[0] === T_NAMESPACE) {
+                $buffer = '';
+                for ($j = $i + 1; $j < $count; $j++) {
+                    $t = $tokens[$j];
+                    if ($t === ';') {
+                        break;
+                    }
+                    if (is_array($t)) {
+                        $buffer .= $t[1];
+                    }
+                }
+                $namespace = trim($buffer);
+                continue;
+            }
+            if ($token[0] === T_CLASS) {
+                // 跳过匿名类：类关键词后紧跟 { 则无类名
+                for ($k = $i + 1; $k < $count; $k++) {
+                    $t = $tokens[$k];
+                    if ($t === '{') {
+                        break;
+                    }
+                    if (is_array($t) && $t[0] === T_STRING) {
+                        $className = $t[1];
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+        if ($className === null) {
+            return null;
+        }
+        return $namespace !== '' ? $namespace . '\\' . $className : $className;
+    }
+
+    /**
      * 获取文件相对目录的路径（统一为 / 分隔，去掉根前缀）.
      */
     protected function relativePath(string $file, string $dir): string
@@ -152,26 +219,25 @@ class Data
     }
 
     /**
-     * 解析单个控制器文件，推导类名并反射生成路由数据.
+     * 解析单个控制器文件，类名取自文件内容，反射生成路由数据.
+     *
+     * @param string $file       控制器文件绝对路径
+     * @param string $appPath    所属应用目录（作为相对路径基准与命名空间根）
+     * @param string $appSegment 所属应用名段（多应用下为应用名，单应用为空）
      */
-    protected function parseFile(string $file): void
+    protected function parseFile(string $file, string $appPath, string $appSegment): void
     {
-        $relative = $this->relativePath($file, $this->appPath);
+        $relative = $this->relativePath($file, $appPath);
         if ($relative === '') {
             return;
         }
         $path = substr($relative, 0, -4); // 去掉 .php
         $segments = explode('/', $path);
-        $fileName = array_pop($segments); // 文件名（不含 .php）
+        array_pop($segments); // 弹出文件名，仅保留目录段（如 install/controller）
 
-        // 目录部分转命名空间段
-        $namespace = $this->namespace;
-        if (!empty($segments)) {
-            $namespace .= '\\' . implode('\\', $segments);
-        }
-        $className = $namespace . '\\' . $fileName;
-
-        if (!class_exists($className)) {
+        // 从文件内容解析真实类名，避免文件名 != 类名时漏扫（如 Install.php 内定义 Index 类）
+        $className = $this->resolveClassFromFile($file);
+        if ($className === null || !class_exists($className)) {
             return;
         }
 
@@ -192,7 +258,7 @@ class Data
         $classAnnotations = $this->mergeAnnotations($reflection->getAttributes(Annotation::class));
 
         // 计算默认路径前缀
-        $prefix = $this->prefixFromPath($segments, $fileName);
+        $prefix = $this->prefixFromPath($segments, $shortName);
 
         // 遍历公共方法
         $methods = [];
@@ -225,14 +291,14 @@ class Data
             'class' => $className,
             'name' => $controllerName,
             'path' => $prefix,
-            'app' => $this->appSegment,
+            'app' => $appSegment,
             'methods' => $methods,
         ];
         self::$data[] = [
             'class' => $className,
             'name' => $controllerName,
             'path' => $prefix,
-            'app' => $this->appSegment,
+            'app' => $appSegment,
             'methods' => $methods,
         ];
     }

@@ -164,6 +164,39 @@ Data::$route;  // 路由数据（同上，供路由注册使用）
 - `Index::index`：主路由 `/index/index`，别名 `/index`。
 - `app/index/controller/Diary::index`：主路由 `/diary/index`，别名 `/diary`。访问 `/index/diary` → `/index/diary/index`。
 
+## 跨应用 URL 生成
+
+ThinkPHP 多应用（`topthink/think-multi-app`）下，`url('跨应用.路由名')` 会被框架**强制加上「当前应用」前缀**。例如当前在 `install` 应用时调用 `url('admin.login.index')`，框架会用 `rule` 路径 `/login/index` 拼上当前应用名，错误生成为 `/install/login/index`。
+
+插件提供 `Kingbes\Annotation\Url::build()`，会把「首段为其它应用目录的点分路由名」自动转为绝对路径，从而生成正确 URL。要全局生效，请在应用公共文件 `common.php` 中覆盖 `url()`：
+
+```php
+<?php
+// 位于 应用/common.php 或 项目根/common.php
+if (!function_exists('url')) {
+    function url(string $url = '', array $vars = [], $suffix = true, $domain = false)
+    {
+        return \Kingbes\Annotation\Url::build($url, $vars, $suffix, $domain);
+    }
+}
+```
+
+> 覆盖生效前提：该 `common.php` 需**先于框架 `helper.php` 加载**。ThinkPHP 的 `App::load()` 先 `include` 应用 `common.php`、再 `include` 框架 `helper.php`，因此应用 `common.php` 中的定义会优先生效。这个由 `common.php` 放置位置决定：
+
+- 单应用：`app/common.php`。
+- 多应用：默认只会加载当前应用目录下的 `common.php`，若每个应用都要用，可在每个应用放一份，或放到各应用共同引入的位置。
+
+覆盖后，以下调用均正确：
+
+| 调用 | 生成 |
+| --- | --- |
+| `url('admin.login.index')` | `/admin/login/index`（跨应用，插件自动转绝对路径） |
+| `url('admin.index.menu')` | `/admin/index/menu`（跨应用） |
+| `url('/admin/login/index')` | `/admin/login/index`（绝对路径本就正确） |
+| 当前应用下的 `url('admin.index.menu')` | `admin` 应用内调用时维持框架原行为 |
+
+只有首段不是已有应用目录的点分字符串（如自定义 `route_name` 且首段非应用名），才不会被转换而按原语义处理。
+
 ## 测试 / 调试
 
 查看注解生成的路由：
