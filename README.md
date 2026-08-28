@@ -168,7 +168,12 @@ Data::$route;  // 路由数据（同上，供路由注册使用）
 
 ThinkPHP 多应用（`topthink/think-multi-app`）下，`url('跨应用.路由名')` 会被框架**强制加上「当前应用」前缀**。例如当前在 `install` 应用时调用 `url('admin.login.index')`，框架会用 `rule` 路径 `/login/index` 拼上当前应用名，错误生成为 `/install/login/index`。
 
-插件提供 `Kingbes\Annotation\Url::build()`，会把「首段为其它应用目录的点分路由名」自动转为绝对路径，从而生成正确 URL。要全局生效，请在应用公共文件 `common.php` 中覆盖 `url()`：
+插件提供 `Kingbes\Annotation\Url::build()`，分两步处理：
+
+1. **跨应用路由名**（首段是其它应用目录，如 `admin.login.index`）→ 转为绝对路径 `/admin/login/index`，走框架绝对路径分支
+2. **全局路由名**（首段不是应用目录，如 `files.download`）→ 生成后去掉框架强加的当前应用前缀
+
+要全局生效，请在应用公共文件 `common.php` 中覆盖 `url()`：
 
 ```php
 <?php
@@ -190,12 +195,23 @@ if (!function_exists('url')) {
 
 | 调用 | 生成 |
 | --- | --- |
-| `url('admin.login.index')` | `/admin/login/index`（跨应用，插件自动转绝对路径） |
+| `url('admin.login.index')` | `/admin/login/index`（跨应用，转绝对路径） |
 | `url('admin.index.menu')` | `/admin/index/menu`（跨应用） |
+| `url('files.download', ['id'=>1, 'ext'=>'png'])` | `/files/1.png`（全局路由名，去掉应用前缀） |
 | `url('/admin/login/index')` | `/admin/login/index`（绝对路径本就正确） |
 | 当前应用下的 `url('admin.index.menu')` | `admin` 应用内调用时维持框架原行为 |
 
-只有首段不是已有应用目录的点分字符串（如自定义 `route_name` 且首段非应用名），才不会被转换而按原语义处理。
+### 多应用下全局路由文件加载
+
+think-multi-app 会把 `Http::loadRoutes()` 的路由目录改为 `app/{应用}/route/`，导致项目根 `route/*.php`（如自定义的 `route/app.php`）**不会在 HTTP 请求中加载**，其中定义的路由名（如 `files.download`）无法用 `url()` 生成。
+
+插件在 `RouteLoaded` 事件中自动补加载全局 `route/*.php`（用 `include_once`，与框架已加载的场景不冲突），使全局路由名在请求中可用。`php think route:list` 能看到但请求中用不到的场景即由此修复。
+
+### 多应用下 URL 生成注意
+
+- 跨应用链接：`url('admin.login.index')` 由插件自动转 `/admin/login/index`，无影响。
+- 全局路由名：`url('files.download', [...])` 由插件去掉框架强加的当前应用前缀，生成 `/files/...`。
+- 以上均需先按上文在应用 `common.php` 覆盖 `url()`。
 
 ## 测试 / 调试
 

@@ -19,9 +19,30 @@ class Service extends BaseService
             if (empty($config['enable'])) {
                 return;
             }
+            // 多应用下 Http::loadRoutes() 只加载 app/{应用}/route/，全局 route/*.php 被跳过；
+            // 此处补加载全局路由文件，使其中定义的路由名（如 files.download）在请求中可用
+            $this->loadGlobalRoutes();
             new Data($this->app, $config);
             $this->registerAnnotationRoutes();
         });
+    }
+
+    /**
+     * 加载全局路由文件（项目根 route/*.php）.
+     *
+     * 多应用下 Http::loadRoutes() 的 routePath 被设置为 app/{应用}/route/，
+     * 全局 route/ 目录被跳过。用 include_once 避免与框架重复加载（单应用下框架
+     * 已用 include 加载过，include_once 不会二次执行）。
+     */
+    protected function loadGlobalRoutes(): void
+    {
+        $routePath = $this->app->getRootPath() . 'route' . DIRECTORY_SEPARATOR;
+        if (!is_dir($routePath)) {
+            return;
+        }
+        foreach (glob($routePath . '*.php') as $file) {
+            include_once $file;
+        }
     }
 
     protected function registerAnnotationRoutes(): void
