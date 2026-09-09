@@ -7,6 +7,9 @@
         "php": ">=8.0",
         "topthink/framework": "^8.0"
     },
+    "suggest": {
+        "topthink/think-multi-app": "多应用支持，安装后才会启用按应用拆分的路由规则与 Url::build() 的跨应用处理"
+    },
     "autoload": {
         "psr-4": {
             "Kingbes\\Annotation\\": "src"

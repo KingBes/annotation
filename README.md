@@ -25,6 +25,7 @@ composer require kingbes/annotation
 | --- | --- | --- | --- |
 | `enable` | `bool` | `true` | 总开关，`false` 时关闭注解路由 |
 | `controllers` | `array` | `[]` | 额外扫描的控制器目录（绝对路径，或相对项目根的路径） |
+| `cache` | `bool` | 跟随 `app_debug` | 扫描结果缓存。调试模式默认关闭，生产默认开启；显式设置可强制开关 |
 
 默认扫描目录为应用的控制器目录（`app/**/controller`）。如需覆盖配置，在项目 `config/annotation.php` 中写同名键即可（ThinkPHP 会自动合并）：
 
@@ -35,6 +36,8 @@ return [
     'controllers' => [],
 ];
 ```
+
+`controllers` 中的目录以**该目录自身**作为路由前缀的推导基准，因此可以指向任意位置（不要求在当前应用目录内）。例如把 `app/index/controller` 填进去，其中 `Index::index` 推导出的前缀就是 `/index`，而不是磁盘绝对路径。
 
 ## 快速开始
 
@@ -133,7 +136,35 @@ Data::$data;   // 全部注解数据（class / name / path / methods）
 Data::$route;  // 路由数据（同上，供路由注册使用）
 ```
 
-其中 `methods` 为每个方法的 `path` / `request` / `middleware` / `name` / `route_name`。
+控制器项结构：
+
+```php
+[
+    'class'   => 'app\admin\controller\Role', // 完整类名
+    'name'    => 'role',                      // 控制器名（下划线）
+    'path'    => '/role',                     // 路由前缀（不含应用名）
+    'app'     => 'admin',                     // 所属应用名段（单应用为空字符串）
+    'title'   => '角色管理',                   // 类级 #[Annotation] 的自定义键，平铺在此
+    'auth'    => true,                        // 同上
+    'methods' => [ /* 见下 */ ],
+]
+```
+
+**类级注解的自定义键会平铺到控制器项**（`class` / `name` / `path` / `app` / `methods` 这几个保留键不会被覆盖），因此 `#[Annotation(['title' => '角色管理'])]` 可以直接用 `$item['title']` 读取，常用于菜单、权限树等按控制器分组的场景。
+
+`methods` 中每项为类级与方法级注解合并后的结果，包含 `path` / `request` / `middleware` / `name`（PHP 方法名）/ `route_name`（自定义 `name`，未设置时无此键），以及全部自定义键。方法级未写的键会继承类级的值：
+
+```php
+#[Annotation(['title' => '角色管理', 'auth' => true])]   // 类级
+class Role
+{
+    #[Annotation(['title' => '列表', 'menu' => true])]   // 方法级
+    public function view() {}
+}
+```
+
+- 控制器项：`title = '角色管理'`、`auth = true`
+- `view` 方法：`title = '列表'`（方法级覆盖）、`auth = true`（继承自类级）、`menu = true`
 
 ## 默认路由规则
 
@@ -227,10 +258,19 @@ php think route:list
 php think clear
 ```
 
+## 扫描缓存
+
+注解扫描结果会缓存到 `runtime/annotation.php`，缓存是否失效由「控制器文件清单 + 各自的 `mtime` + `controller_layer` / `controller_suffix` 配置」共同决定，改动任一文件都会自动重扫，无需手动清理。
+
+- 未配置 `cache` 时跟随 `app_debug`：调试模式关闭缓存（改完注解立即生效），生产模式开启。
+- 显式配置 `cache` 可强制开关。
+- 仍可用 `php think clear` 清空 runtime 强制重建。
+
 ## 限制
 
 - 仅扫描 `app/` 下映射到基础命名空间（默认 `app`）的控制器文件。
-- `controllers` 额外目录应位于 `app` 命名空间树内，否则反射出的类可能无法自动加载。
+- `controllers` 额外目录可以放在任意位置，但其中定义的类必须能被 Composer 自动加载，否则会被跳过。
 - 注解数组键值必须使用 `=>` 语法。
 - 仅扫描公共方法，忽略 `__construct` / `__destruct`，忽略抽象类、接口与 trait。
-- 路由有改动后需清缓存（`php think clear`）。
+- 每个文件只取第一个具名类（跳过匿名类与 `Foo::class` 中的 `class` 关键字）。
+- 多应用下，`php think route:list` 与真实 HTTP 请求使用同一套规则（规则本身不含应用名，由多应用机制补上应用段）。

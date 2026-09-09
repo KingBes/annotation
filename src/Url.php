@@ -44,6 +44,13 @@ class Url
             $current = app('http')->getName();
 
             if ($target !== $current) {
+                // 路由名已注册但规则含必选变量且 $vars 缺失时，框架会退化为相对解析
+                // 并产出错误 URL（如 //files.download.html），此处显式抛错便于定位
+                if (self::isUnbuildable($url, $vars)) {
+                    throw new \InvalidArgumentException(
+                        'Route name missing required variable(s): ' . $url
+                    );
+                }
                 return self::stripAppPrefix((string)$obj, $current);
             }
         }
@@ -87,6 +94,35 @@ class Url
     protected static function isDotName(string $url): bool
     {
         return false !== strpos($url, '.') && false === strpos($url, '/');
+    }
+
+    /**
+     * 检测已注册路由名是否因缺少必选变量而无法生成 URL.
+     *
+     * 规则中 <var> 为必选变量（<var?> 为可选，不会被匹配）。已注册但每条规则的
+     * 必选变量都无法由 $vars 补齐时返回 true，此时框架会跳过名称匹配退化为
+     * 相对地址解析，产出错误 URL；未注册的点名不属于本方法的处理范围。
+     */
+    protected static function isUnbuildable(string $name, array $vars): bool
+    {
+        $items = \think\facade\Route::getName($name);
+        if (empty($items)) {
+            return false;
+        }
+
+        foreach ($items as $item) {
+            if (!preg_match_all('/<(\w+?)>/', (string) $item['rule'], $matches)) {
+                return false; // 该条规则无必选变量，可直接生成
+            }
+            foreach ($matches[1] as $var) {
+                if (!array_key_exists($var, $vars)) {
+                    continue 2; // 该条缺变量，尝试下一条同名规则
+                }
+            }
+            return false; // 必选变量齐全，可正常生成
+        }
+
+        return true;
     }
 
     /**
