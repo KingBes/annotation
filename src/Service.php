@@ -49,32 +49,40 @@ class Service extends BaseService
     protected function registerAnnotationRoutes(): void
     {
         $route = $this->app->route;
+        // 多应用下 think-multi-app 在派发前剥离 URL 首段（应用名）再做路由匹配，
+        // 因此所有应用共用一个全局路由池时，两个应用若都有同名控制器（如 Index），
+        // 其应用内路径（/、index/index 等）会重复注册，而 TP 首条匹配即胜出、
+        // 守卫中间件来不及区分，导致默认应用路由被其它应用规则截胡（跨应用穿透）。
+        //
+        // 修复：应用已绑定时（HTTP 请求）只注册「当前应用」的路由，从根本上杜绝
+        // 同路径跨应用碰撞；未绑定时（CLI，如 php think route:list）注册全部应用，
+        // 便于开发期查看完整路由表。该策略同时让 AppGuard 退化为兜底防线。
+        $currentApp = $this->app->http->getName();
+
         foreach (Data::$route as $controller) {
             $class = $controller['class'];
             $prefix = $controller['path'];
-            // 规则路径不含应用段（多应用下由 think-multi-app 剥离应用前缀后匹配）；
-            // name 前缀带应用段。由于所有应用共用一个全局路由池，必须挂 AppGuard
-            // 守卫，仅当请求当前应用名 == 规则所属应用名时才放行，否则会跨应用穿透。
             $app = $controller['app'] ?? '';
+            if ($currentApp !== '' && $app !== $currentApp) {
+                continue; // 应用隔离：仅注册当前应用的路由
+            }
             $nameBase = ($app !== '' ? '/' . $app : '') . $prefix;
             foreach ($controller['methods'] as $method) {
                 $methodName = $method['name'];
+
+                if ($methodName === 'index') {
+                    // index 方法作为应用/控制器的默认入口，注册多级「去掉末尾 /index」别名，
+                    // 使 /、/index、/index/index、/index/index/index 等形态都能落到 Index@index；
+                    // 非默认应用同理（/admin、/admin/index、/admin/index/index）。
+                    foreach ($this->indexAliasPaths($prefix) as $aliasPath) {
+                        $name = ($app !== '' ? '/' . $app : '') . $aliasPath;
+                        $this->add($route, $class, $method, $aliasPath, $name, $app);
+                    }
+                    continue;
+                }
+
                 $rulePath = $prefix . '/' . $this->snake($methodName);
                 $this->add($route, $class, $method, $rulePath, $nameBase . '/' . $this->snake($methodName), $app);
-
-                // index 方法额外注册去掉末尾连续 /index 段的别名路径
-                if ($methodName === 'index') {
-                    $alias = preg_replace('#(?:/index)+$#', '', $prefix . '/index');
-                    if ($alias === '') {
-                        $alias = '/';
-                    }
-                    $nameAlias = preg_replace('#(?:/index)+$#', '', rtrim($nameBase, '/') . '/index');
-                    if ($nameAlias === '') {
-                        // 剥光后为空（如根 Index::index 的 / 别名），兜底用应用标识，与 admin 对齐
-                        $nameAlias = $app !== '' ? '/' . $app : 'index';
-                    }
-                    $this->add($route, $class, $method, $alias, $nameAlias, $app);
-                }
 
                 // 自定义 path（多应用下类型前缀同样补充应用名）
                 foreach ((array) $method['path'] as $path) {
@@ -82,6 +90,48 @@ class Service extends BaseService
                 }
             }
         }
+    }
+
+    /**
+     * 计算 index 方法的全部应用内路径别名.
+     *
+     * 从「前缀/index」出发，逐级剥掉末尾 /index 段（/index/index → /index → /），
+     * 再追加一级（覆盖显式写出应用名如 /index/index/index 的入口），最终得到
+     * 一组互不相同的应用内路径，供多应用下各形态的默认入口 URL 命中。
+     *
+     * @return string[]
+     */
+    protected function indexAliasPaths(string $prefix): array
+    {
+        // $prefix 形如 /index、/admin/index、/v1/article（应用内路径，不含应用段）。
+        // 以「前缀/index」为起点，逐级剥掉末尾 /index 段（/index/index → /index → /），
+        // 再追加一级（覆盖 /index/index/index 这类显式入口），最终得到一组互不相同的
+        // 应用内路径，供多应用下各形态的默认入口 URL 命中。
+        //
+        // 注意：剥到只剩 /index 时正则会剥出空串 ''，必须归一为 '/'。空串规则是
+        // 语义错误（根路径应注册成 '/'），统一在循环内把空串收口为 '/'，使根别名
+        // 始终为规范的根规则。（注：带后缀的 /.html 在 TP8 下仍由框架层判 404，
+        // 与路由规则无关——原生 Route::get('/', ...) 同样如此，属框架已知行为。）
+        $main = rtrim($prefix, '/') . '/index';
+        $paths = [$main];
+        $cur = $main;
+        while (true) {
+            $next = preg_replace('#/index$#', '', $cur, 1);
+            if ($next === '') {
+                $next = '/'; // 剥到 /index 时收口为根，避免空串规则
+            }
+            if ($next === $cur) {
+                break; // 末尾无 /index 可剥，停止
+            }
+            $paths[] = $next;
+            if ($next === '/') {
+                break;
+            }
+            $cur = $next;
+        }
+        $paths[] = $main . '/index'; // 追加一级：/index/index/index 这类显式应用名入口
+
+        return array_values(array_unique($paths));
     }
 
     protected function add($route, string $class, array $method, string $rulePath, string $namePath, string $app = ''): void
